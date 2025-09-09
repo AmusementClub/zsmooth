@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) !void {
     const vapoursynth_dep = b.dependency("vapoursynth", .{
         .target = target,
         .optimize = optimize,
+        .vsapi4_minor = .minor_0,
     });
 
     const zsmooth_options: std.Build.SharedLibraryOptions = .{
