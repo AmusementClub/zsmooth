@@ -1,0 +1,84 @@
+name: Build (Windows)
+
+on:
+  release:
+    types: [created]
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'which tag to create and release?'
+        required: true
+        default: 'v100'
+
+jobs:
+  build-windows:
+    runs-on: windows-2025
+
+    strategy:
+      matrix:
+        arch:
+          - x86_64_v3 # AVX2
+          - x86_64_v4 # AVX512
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+    - name: Parse matrix arch
+      shell: pwsh
+      run: |
+        if ("${{ matrix.arch }}" -eq "x86_64_v4") {
+          echo "DCPU=x64_avx512" >> "$env:GITHUB_ENV"
+        } else {
+          echo "DCPU=x64_avx2" >> "$env:GITHUB_ENV"
+        }
+
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+
+    - name: Build
+      run: zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=${{ matrix.arch }}
+
+    - name: Package Release
+      shell: bash
+      if: github.event_name == 'release'
+      run: |
+        cd zig-out/bin
+        7z a -t7z -mx=7 ../../zsmooth-${{ github.event.release.tag_name }}-${{ env.DCPU }}.7z *.dll
+
+    - name: Package Release
+      shell: bash
+      if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''
+      run: |
+        cd zig-out/bin
+        7z a -t7z -mx=7 ../../zsmooth-${{ github.event.inputs.tag }}-${{ env.DCPU }}.7z *.dll
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: zsmooth-windows-${{ env.DCPU }}
+        path: zig-out/bin/*.dll
+
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      if: github.event_name == 'release'
+      with:
+        files: "zsmooth-${{ github.event.release.tag_name }}-${{ env.DCPU }}.7z"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''
+      with:
+        tag_name: ${{ github.event.inputs.tag }}
+        files: "zsmooth-${{ github.event.inputs.tag }}-${{ env.DCPU }}.7z"
+        prerelease: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
