@@ -1,5 +1,6 @@
 const std = @import("std");
 const vapoursynth = @import("vapoursynth");
+const ZAPI = vapoursynth.ZAPI;
 
 const lossyCast = @import("math.zig").lossyCast;
 const getVecSize = @import("vector.zig").getVecSize;
@@ -8,6 +9,28 @@ const math = @import("math.zig");
 
 const vs = vapoursynth.vapoursynth4;
 const vsh = vapoursynth.vshelper;
+
+/////////////////////////////////////////////////
+/// Vapoursynth API helpers
+/////////////////////////////////////////////////
+
+//TODO: Replace all references of this with ZAPI.Zmap.
+//Doing so will require rewriting most of the function signatures in this file
+//to remove the pass in map + vsapi instance.
+//I'm just copy-pasting this from vapoursynth-zig (since dnjulek removed it after the 0.15.1 release)
+//in order to prevent a broader refactoring.
+
+/// Helper to use Zig Optionals and saturate to return type
+pub fn mapGetN(comptime T: type, in: ?*const vs.Map, key: [*:0]const u8, index: u32, vsapi: ?*const vs.API) ?T {
+    var err: vs.MapPropertyError = undefined;
+    const val: T = switch (@typeInfo(T)) {
+        .int => math.lossyCast(T, vsapi.?.mapGetInt.?(in, key, @intCast(index), &err)),
+        .float => math.lossyCast(T, vsapi.?.mapGetFloat.?(in, key, @intCast(index), &err)),
+        .bool => vsapi.?.mapGetInt.?(in, key, @intCast(index), &err) != 0,
+        else => @compileError("mapGetN only works with Int, Float and Bool types"),
+    };
+    return if (err == .Success) val else null;
+}
 
 /////////////////////////////////////////////////
 // Video format utilities (value scaling, peak finding, etc)
@@ -36,7 +59,6 @@ pub const FormatType = enum {
 /// Scales an 8 bit value match the pertinent bit depth, sample
 /// type, and plane (is/is not chroma).
 pub fn scaleToFormat(comptime T: type, vf: vs.VideoFormat, value: anytype, plane: anytype) T {
-    // const V = @TypeOf(value);
     // Float support, 16-32 bit.
     if (vf.sampleType == vs.SampleType.Float) {
         var out: f32 = lossyCast(f32, value) / 255.0;
@@ -283,25 +305,6 @@ test formatVectorLength {
     try std.testing.expectEqual(getVecSize(f32), formatVectorLength(F32_RGB_FORMAT));
 }
 
-/// Creates a new video frame with optional copying of source planes from a src
-/// frame. The copies are goverened by the boolean values in the `process`
-/// variable. If the value is true, then its expected to be proccessed by the
-/// caller, and thus is *not* copied from the src frame.
-///
-/// If the value is false, then the plane is copied from the source frame.
-pub fn newVideoFrame(process: *const [3]bool, src: ?*const vs.Frame, vi: *const vs.VideoInfo, core: ?*vs.Core, vsapi: ?*const vs.API) ?*vs.Frame {
-    // Prepare array of frame pointers, with null for planes we will process,
-    // and pointers to the source frame for planes we won't process.
-    var plane_src = [_]?*const vs.Frame{
-        if (process[0]) null else src,
-        if (process[1]) null else src,
-        if (process[2]) null else src,
-    };
-    const planes = [_]c_int{ 0, 1, 2 };
-
-    return vsapi.?.newVideoFrame2.?(&vi.format, vi.width, vi.height, @ptrCast(&plane_src), @ptrCast(&planes), src, core);
-}
-
 pub const PlanesError = error{
     IndexOutOfRange,
     SpecifiedTwice,
@@ -325,7 +328,7 @@ pub fn normalizePlanes(format: vs.VideoFormat, in: ?*const vs.Map, vsapi: ?*cons
 
     if (!requestedPlanesIsEmpty) {
         for (0..@intCast(requestedPlanesSize)) |i| {
-            const plane: u8 = vsh.mapGetN(u8, in, "planes", @intCast(i), vsapi) orelse unreachable;
+            const plane: u8 = mapGetN(u8, in, "planes", @intCast(i), vsapi) orelse unreachable;
 
             if (plane < 0 or plane > format.numPlanes) {
                 return PlanesError.IndexOutOfRange;
@@ -350,7 +353,7 @@ pub fn normalizeThreshold(key: [:0]const u8, scalep: bool, defaults: [3]f32, for
     var values = defaults;
 
     for (0..3) |i| {
-        if (vsh.mapGetN(f32, in, key, @intCast(i), vsapi)) |_val| {
+        if (mapGetN(f32, in, key, @intCast(i), vsapi)) |_val| {
             if (scalep and (_val < 0 or _val > 255)) {
                 return ThresholdError.ScaledValueOutsideOfRange;
             }
@@ -386,6 +389,12 @@ pub fn reportError(msg: [:0]const u8, vsapi: ?*const vs.API, out: ?*vs.Map, node
     vsapi.?.mapSetError.?(out, msg.ptr);
     vsapi.?.freeNode.?(node);
     return;
+}
+
+/// Reports an error to the VS API (using ZAPI) and frees the input node;
+pub fn reportError2(msg: [:0]const u8, zapi: ZAPI, outz: ZAPI.ZMap(?*vs.Map), node: ?*vs.Node) void {
+    outz.setError(msg);
+    zapi.freeNode(node);
 }
 
 const SoftThresholdParams = struct { bias: f32, threshold_lower: f32, threshold_upper: f32, threshold_scale: f32 };

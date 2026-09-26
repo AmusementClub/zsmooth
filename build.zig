@@ -1,29 +1,34 @@
 const std = @import("std");
 const x86 = std.Target.x86;
+const zon = @import("build.zig.zon");
 
-pub const min_zig_version = std.SemanticVersion{ .major = 0, .minor = 14, .patch = 0 };
-
+// Compile for target CPUs based on Myrsloik's "essay"
+// https://github.com/vapoursynth/vapoursynth/issues/1185#issuecomment-4235066569
+// This mainly means targeting haswell for the equivalent of AVX2 instructions,
+// and then Zen 4, with SSE4a support disabled since it was never implemented for Intel CPUs
+const min_glibc_version =  std.SemanticVersion{ .major = 2, .minor = 17, .patch = 0};
 const targets = [_]std.Target.Query{
     .{ .os_tag = .macos, .cpu_arch = .aarch64 },
     .{ .os_tag = .macos, .cpu_arch = .x86_64 },
-    .{ .os_tag = .linux, .cpu_arch = .aarch64, .abi = .gnu },
+    .{ .os_tag = .linux, .cpu_arch = .aarch64, .abi = .gnu, .glibc_version = min_glibc_version },
     .{ .os_tag = .linux, .cpu_arch = .aarch64, .abi = .musl },
-    .{ .os_tag = .linux, .cpu_arch = .x86_64, .cpu_model = std.Target.Query.CpuModel{ .explicit = &x86.cpu.x86_64_v3 }, .abi = .gnu },
-    .{ .os_tag = .linux, .cpu_arch = .x86_64, .cpu_model = std.Target.Query.CpuModel{ .explicit = &x86.cpu.x86_64_v3 }, .abi = .musl },
-    .{ .os_tag = .linux, .cpu_arch = .x86_64, .cpu_model = std.Target.Query.CpuModel{ .explicit = &x86.cpu.znver4 }, .abi = .gnu },
-    .{ .os_tag = .linux, .cpu_arch = .x86_64, .cpu_model = std.Target.Query.CpuModel{ .explicit = &x86.cpu.znver4 }, .abi = .musl },
-    .{ .os_tag = .windows, .cpu_arch = .x86_64, .cpu_model = std.Target.Query.CpuModel{ .explicit = &x86.cpu.x86_64_v3 } },
-    .{ .os_tag = .windows, .cpu_arch = .x86_64, .cpu_model = std.Target.Query.CpuModel{ .explicit = &x86.cpu.znver4 } },
+    .{ .os_tag = .linux, .cpu_arch = .x86_64, .cpu_model = std.Target.Query.CpuModel{ .explicit = &x86.cpu.haswell }, .abi = .gnu, .glibc_version = min_glibc_version },
+    .{ .os_tag = .linux, .cpu_arch = .x86_64, .cpu_model = std.Target.Query.CpuModel{ .explicit = &x86.cpu.haswell }, .abi = .musl },
+    .{ .os_tag = .linux, .cpu_arch = .x86_64, .cpu_model = std.Target.Query.CpuModel{ .explicit = &x86.cpu.znver4 }, .cpu_features_sub = x86.featureSet(&[_]x86.Feature{.sse4a, .avx512bf16}), .abi = .gnu, .glibc_version = min_glibc_version },
+    .{ .os_tag = .linux, .cpu_arch = .x86_64, .cpu_model = std.Target.Query.CpuModel{ .explicit = &x86.cpu.znver4 }, .cpu_features_sub = x86.featureSet(&[_]x86.Feature{.sse4a, .avx512bf16}), .abi = .musl },
+    .{ .os_tag = .windows, .cpu_arch = .x86_64, .cpu_model = std.Target.Query.CpuModel{ .explicit = &x86.cpu.haswell } },
+    .{ .os_tag = .windows, .cpu_arch = .x86_64, .cpu_model = std.Target.Query.CpuModel{ .explicit = &x86.cpu.znver4 }, .cpu_features_sub = x86.featureSet(&[_]x86.Feature{.sse4a, .avx512bf16}) },
 };
 
 pub fn build(b: *std.Build) !void {
-    ensureZigVersion() catch return;
+    ensureZigVersion(try .parse(zon.minimum_zig_version)) catch return;
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     const optimize_float = b.option(bool, "optimize-float", "Enables 'fast-math' optimizations for floating point arithmetic, at the expense of accuracy. Defaults to enabled/true.") orelse true;
     const options = b.addOptions();
     options.addOption(bool, "optimize_float", optimize_float);
+    options.addOption(std.SemanticVersion, "version", try .parse(zon.version));
 
     const vapoursynth_dep = b.dependency("vapoursynth", .{
         .target = target,
@@ -31,15 +36,17 @@ pub fn build(b: *std.Build) !void {
         .vsapi4_minor = .minor_0,
     });
 
-    const zsmooth_options: std.Build.SharedLibraryOptions = .{
-        .name = "zsmooth",
+    const fftw_dep = b.dependency("fftw", .{
+        .target = target,
+        .optimize = optimize,
+        .precision = .single,
+        .threads = true,
+    });
+
+    const root_module_options: std.Build.Module.CreateOptions = .{
         .root_source_file = b.path("src/zsmooth.zig"),
         .target = target,
         .optimize = optimize,
-
-        // Improve build times by giving an upper bound to memory,
-        // thus enabling multi-threaded builds.
-        .max_rss = 1024 * 1024 * 1024 * 2, // 2GB
 
         // This application is single threaded (as VapourSynth handles the threading for us)
         // so might as well mark it so in case we ever import data
@@ -47,36 +54,75 @@ pub fn build(b: *std.Build) !void {
         // in which case setting this value will optimize out any threading
         // or locking constructs.
         .single_threaded = true,
+
+        .strip = optimize == .ReleaseFast,
+
+        // Necessary to use the C memory allocator.
+        .link_libc = true,
+    };
+    const root_module = b.createModule(root_module_options);
+
+    root_module.addImport("vapoursynth", vapoursynth_dep.module("vapoursynth"));
+    root_module.linkLibrary(fftw_dep.artifact("fftw3f"));
+    root_module.addOptions("config", options);
+
+    const lib_options: std.Build.LibraryOptions = .{
+        .name = "zsmooth",
+        .root_module = root_module,
+
+        // Ensure we build a shared (*.so) library.
+        .linkage = .dynamic,
+
+        // Improve build times by giving an upper bound to memory,
+        // thus enabling multi-threaded builds.
+        .max_rss = 1024 * 1024 * 1024 * 2, // 2GB
     };
 
-    const lib = b.addSharedLibrary(zsmooth_options);
+    const lib = b.addLibrary(lib_options);
 
-    lib.root_module.addImport("vapoursynth", vapoursynth_dep.module("vapoursynth"));
-    lib.root_module.addOptions("config", options);
-    lib.root_module.strip = lib.root_module.optimize == .ReleaseFast; //Strip debug symbols in ReleaseFast.
-    lib.linkLibC(); // Necessary to use the C memory allocator.
+    // Add check step for quick n easy build checking without
+    // emitting binary output.
+    //
+    // Allows ZLS to provide better inline errors.
+    //
+    // https://zigtools.org/zls/guides/build-on-save/
+    const check = b.step("check", "Check if zsmooth compiles");
+    check.dependOn(&lib.step);
 
     b.installArtifact(lib);
 
     // Release (build all platforms)
     const release = b.step("release", "Build release artifacts for all supported platforms");
     for (targets) |t| {
-        var opts = zsmooth_options;
-        opts.target = b.resolveTargetQuery(t);
-        const release_lib = b.addSharedLibrary(opts);
+        // copy root module options so we can operate on them separately.
+        var target_root_module_options = root_module_options;
+        target_root_module_options.target = b.resolveTargetQuery(t);
 
-        release_lib.root_module.addImport("vapoursynth", vapoursynth_dep.module("vapoursynth"));
-        release_lib.root_module.addOptions("config", options);
-        release_lib.root_module.strip = release_lib.root_module.optimize == .ReleaseFast;
-        release_lib.linkLibC(); // Necessary to use the C memory allocator.
+        const target_root_module = b.createModule(target_root_module_options);
+        target_root_module.addImport("vapoursynth", vapoursynth_dep.module("vapoursynth"));
+        target_root_module.addOptions("config", options);
 
-        const cpu_model_name = switch(t.cpu_model){
+        const target_fftw_dep = b.dependency("fftw", .{
+            .target = target_root_module_options.target,
+            .optimize = optimize,
+            .precision = .single,
+            .threads = true,
+        });
+        target_root_module.linkLibrary(target_fftw_dep.artifact("fftw3f"));
+
+        // copy lib options so we can operate on them separately.
+        var target_lib_options = lib_options;
+        target_lib_options.root_module = target_root_module;
+
+        const release_lib = b.addLibrary(target_lib_options);
+
+        const cpu_model_name = switch (t.cpu_model) {
             .baseline => "baseline",
             .determined_by_arch_os => "default",
             .native => "native",
             .explicit => t.cpu_model.explicit.name,
         };
-        const output_dir = try std.fmt.allocPrint(b.allocator, "{s}-{s}", .{ try t.zigTriple(b.allocator), cpu_model_name });
+        const output_dir = b.fmt("{s}-{s}", .{ try t.zigTriple(b.allocator), cpu_model_name });
 
         const target_output = b.addInstallArtifact(release_lib, .{
             .dest_dir = .{ //
@@ -93,13 +139,8 @@ pub fn build(b: *std.Build) !void {
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const lib_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/zsmooth.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = root_module,
     });
-    lib_unit_tests.root_module.addImport("vapoursynth", vapoursynth_dep.module("vapoursynth"));
-    lib_unit_tests.root_module.addOptions("config", options);
-    lib_unit_tests.linkLibC();
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
@@ -110,7 +151,7 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(&run_lib_unit_tests.step);
 }
 
-fn ensureZigVersion() !void {
+fn ensureZigVersion(min_zig_version: std.SemanticVersion) !void {
     var installed_ver = @import("builtin").zig_version;
     installed_ver.build = null;
 

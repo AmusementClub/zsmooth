@@ -834,17 +834,17 @@ fn RemoveGrain(comptime T: type) type {
     };
 }
 
-fn removeGrainGetFrame(n: c_int, activation_reason: ar, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+fn removeGrainGetFrame(n: c_int, activation_reason: ar, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
     // Assign frame_data to nothing to stop compiler complaints
     _ = frame_data;
 
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, frame_ctx);
     const d: *RemoveGrainData = @ptrCast(@alignCast(instance_data));
 
     if (activation_reason == ar.Initial) {
-        zapi.requestFrameFilter(n, d.node, frame_ctx);
+        zapi.requestFrameFilter(n, d.node);
     } else if (activation_reason == ar.AllFramesReady) {
-        const src_frame = zapi.initZFrame(d.node, n, frame_ctx);
+        const src_frame = zapi.initZFrame(d.node, n);
         defer src_frame.deinit();
 
         const process = [_]bool{
@@ -854,7 +854,7 @@ fn removeGrainGetFrame(n: c_int, activation_reason: ar, instance_data: ?*anyopaq
         };
         const dst = src_frame.newVideoFrame2(process);
 
-        const processPlane: @TypeOf(&RemoveGrain(u8).processPlane) = switch (vscmn.FormatType.getDataType(d.vi.format)) {
+        const processPlane = switch (vscmn.FormatType.getDataType(d.vi.format)) {
             .U8 => &RemoveGrain(u8).processPlane,
             .U16 => &RemoveGrain(u16).processPlane,
             .F16 => &RemoveGrain(f16).processPlane,
@@ -883,16 +883,16 @@ fn removeGrainGetFrame(n: c_int, activation_reason: ar, instance_data: ?*anyopaq
     return null;
 }
 
-export fn removeGrainFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+export fn removeGrainFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     _ = core;
     const d: *RemoveGrainData = @ptrCast(@alignCast(instance_data));
     vsapi.?.freeNode.?(d.node);
     allocator.destroy(d);
 }
 
-export fn removeGrainCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+export fn removeGrainCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     _ = user_data;
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
     const inz = zapi.initZMap(in);
     const outz = zapi.initZMap(out);
 
@@ -909,7 +909,7 @@ export fn removeGrainCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
 
     for (0..3) |i| {
         if (i < numModes) {
-            if (inz.getInt(i32, "mode")) |mode| {
+            if (inz.getInt2(i32, "mode", i)) |mode| {
                 if (mode < 0 or mode > 24) {
                     outz.setError("RemoveGrain: Invalid mode specified, only modes 0-24 supported.");
                     zapi.freeNode(d.node);

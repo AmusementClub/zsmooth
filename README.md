@@ -1,3 +1,7 @@
+<div align="center">
+    <p>Brought to you by <a href="https://flawless.media">Flawless Media - Digitizing and Restoration</a></p>
+</div>
+
 # Zsmooth - cross-platform, cross-architecture video smoothing functions for Vapoursynth, written in Zig
 
 **Goals**
@@ -20,10 +24,16 @@ and explain (in detail) your needs and reasoning.
 ## Implemented Features/Functions
 Please see this [pinned issue](https://github.com/adworacz/zsmooth/issues/7) for the current list, and up vote accordingly.
 
+## Benchmarks
+See [Benchmarks](BENCHMARKS.md)
+
 ## Table of Contents
+* [Installation](#installation)
 * [Function Documentation](#function-documentation)
   * [CCD](#ccd)
   * [Clense / ForwardClense / BackwardClense](#clense--forwardclense--backwardclense)
+  * [Cnr4](#cnr4)
+  * [DCTFilter](#dctfilter)
   * [DegrainMedian](#degrainmedian)
   * [FluxSmooth(S|ST)](#fluxsmoothsst)
   * [InterQuartileMean](#interquartilemean)
@@ -41,6 +51,16 @@ Please see this [pinned issue](https://github.com/adworacz/zsmooth/issues/7) for
    * [Cross Compiling](#cross-compiling)
 * [References](#references)
 
+## Installation
+As of Zsmooth version `0.15.1`, a [Python package](https://pypi.org/project/vapoursynth-zsmooth/) is now available
+for use with VapourSynth r74 and greater. This means that the package can be installed with a simple:
+
+```
+pip install -U vapoursynth-zsmooth
+```
+
+Otherwise, individual binaries can be downloaded from the [Releases](https://github.com/adworacz/zsmooth/releases) page.
+
 ## Function Documentation
 ### CCD
 CCD, aka Camcorder Color Denoiser, is an excellent chroma denoiser originally written by 
@@ -50,22 +70,27 @@ It's a chroma denoiser that works great on old sources such as VHSes and DVDs.
 
 CCD works as a convolution (weighted average) of near pixels governed by the `ref_points` and `scale` parameters.
 
-If the Euclidean distance between the RGB values of the center pixel and a given pixel in the convolution
+If the Euclidean distance between the values of the center pixel and a given pixel in the convolution
 matrix is less than the threshold, then this pixel is considered in the average. 
 
-After denoising, the clip should be converted back to YUV / YCoCg, and the luma channel should
-be copied from the input. This plugin only denoises, it does no YUV->RGB->YUV conversion nor luma copying.
+Unlike other CCD implementations, this implementation supports both RGB and YUV clips. The main benefit of native YUV
+handling is a significant speed increase (~10x is not unreasonable for a YUV420P8 clip), but you also don't have to
+convert back and forth to RGB and handle split/joining luma + chroma planes afterwards.
+
+Note that YUV clips likely need a lower threshold value, ~1/2 of RGB's thresholds. Use that as a starting place and
+experiment.
 
 ```py
-core.zsmooth.CCD(clip clip, [float threshold = 4, int temporal_radius = 0, scale = auto, points=[True, True, False]])
+core.zsmooth.CCD(clip clip, [float threshold = 4, int temporal_radius = 0, scale = auto, points=[True, True, False], clip ref = None])
 ```
 | Parameter | Type | Options (Default) | Description |
 | --- | --- | --- | --- |
-| clip | 8-16 bit integer, 16-32 bit float, RGB | | Clip to process |
-| threshold | float | 0-inf (4) | Euclidean distance threshold for including pixels in the convolution. Higher values result in more denoising. Automatically scaled to all bit depths internally. |
+| clip | 8-16 bit integer, 16-32 bit float, RGB or YUV | | Clip to process |
+| threshold | float | 0-inf (4) | Euclidean distance threshold for including pixels in the convolution. Higher values result in more denoising. Automatically scaled to all bit depths internally. YUV formats usually take a lower threshold than RGB formats. When comparing results, start with a YUV threshold about half of your RGB threshold. |
 | temporal_radius | int | 0-10 (0) | Temporal radius of processing. Higher values result in more denoising. |
 | points | bool[3] | ([True, True, False]) | Specifies whether to use the low, medium, or high reference points (or any combination), respectively, in the processing matrix. See the note on points below for more information. The default uses the low and medium, but excludes the high points. Feel free to adjust based on your source. |
 | scale | float | 0-inf (auto) | Multiplier for the size of the matrix. `scale=1` corresponds with a 25x25 matrix (just like the original CCD implementation by Sergey). `scale=2` is a 50x50 matrix, and so on. The default is automatic, which calculates a multiplier based off of the source height, as the original CCD was implemented for 240p content. It's recommended to use the auto calculation and/or adjust `points` to suit your source |
+| ref | clip | None | Reference clip used for internal calculations. Must match source format, width, and height. Final pixel values are taken from source clip, but weights are derived from reference clip, if provided. |
 
 #### Points
 This implementation of CCD supports a configurable set of reference points in the NxN matrix (25x25 for `scale=1`).
@@ -121,10 +146,160 @@ core.zsmooth.BackwardClense(clip clip,[ int[] planes])
 | next | 8-16 bit integer, 16-32 bit float, RGB, YUV, GRAY | (main clip) | Optional alternate clip from which to retrieve next frames |
 | planes | int[] | ([0, 1, 2]) | Which planes to process. Any unfiltered planes are copied from the input clip. |
 
-### DegrainMedian
+### Cnr4
+Cnr4 is a temporal chroma denoiser, inspired by the original [Cnr2](http://avisynth.nl/index.php/Cnr2).
+
+It is particularly effective against stationary rainbows or huge analog chroma activity (like VHS).
 
 ```py
-core.zsmooth.DegrainMedian(clip clip[, float[] limit, int[] mode, bool scalep])
+core.zsmooth.Cnr4(clip clip, [str mode="oxx", int radius=2, int[] sense=[35, 47, 47], int[] str=[192, 255, 255], float[] pow=[1.0, 1.0, 1.0], int tmode=0, int wmode=0, bool scenechange=True, clip ref=None])
+```
+
+Cnr4 currently supports 8-16 bit integer YUV clips, with float support planned.
+
+While Cnr4 is inspired by Cnr2, it provides several key improvements over the original:
+
+1. Multithreading friendly (the original Cnr2 was limited to serial processing).
+2. Roughly 2x faster single-threaded and 10x faster multithreaded.
+2. Better denoising quality due to the use of past and future frames. Cnr2 only used past frames.
+3. Significantly reduced ghosting.
+4. Adjustable temporal radius.
+5. Configurable temporal handling and weighting modes.
+
+#### Temporal Handling Modes (`tmode`)
+Cnr4 implements several modes (configurable using the `tmode` parameter).
+
+Note that mode differences only appear for radius > 1. 
+
+The modes are (roughly) in order of decreasing denoising strength as well as speed. So mode 0 denoises stronger and
+faster than mode 1, and so on. The benefit of the other modes is increased detail retention, along with different
+handling of chroma artifacts. There isn't necessarily one "best" mode, but the default (mode 0) is usually fine.
+
+| tmode | Description |
+| --- | --- |
+| 0 | Inverse difference weighting mode |
+| 1 | Cnr2 mode with radius 1 precalculation - with only internal reference updated based on precalculation. Stronger denoising, but more artifacts than mode 2 |
+| 2 | Cnr2 mode with radius 1 precalculation - both reference and source frames updated based on precalculation. Weaker denoising but more detail retention than mode 1 |
+| 3 | Cnr2 mode with expanding radius precalculation. Much slower than mode 0-2. Like mode 1, only updates references with precalculation. Generally high detail retention, but weaker denoising. Still stronger than mode 4 |
+| 4 | Cnr2 mode with expanding radius precalculation. Much slower than mode 0-2. Like mode 2, updates both reference and source frames with back calculation. Generally the greatest amount of detail retention, but lowest amount of denoising. |
+
+"Radius 1" vs "expanding radius" precalculation refers to how many frames are used when filtering neighbor frames as part
+of precalculation before processing the current frame.
+
+"Radius 1" simply uses one frame before and after the frame being filtered, even if technically there are more frames on
+either side. The final calculation of the current frame uses the full `radius` of frames.
+
+"Expanding radius" uses as many frames as possible for the given frame being filtered. For example for the frames farthest
+away from the current frame, it uses a single previous and next frame, then for the next closest frame, it uses 2
+previous and next frames, and so on, up until it reaches the current frame, where it uses the full `radius`.
+
+##### Mode 0 - Inverse Difference Weight mode
+Inverse difference weight mode operates by calculating the differences between the current frame and an adjacent frame.
+The greater the difference, the lower the weight of the adjacent frame in the final pixel calculation. This alone
+leads to a substantial increase in denoising performance and reduced ghosting when compared to the original Cnr2.
+
+##### Modes 1-4 - Cnr2 modes
+Cnr2 modes are inspired by (surprise) Cnr2's original processing behavior. In the original, Cnr2 would filter a frame
+and then *request* that filtered frame when processing the next frame. While effective, this caused the
+terrible multithreading performance because said request behavior requires serial processing of frames.
+
+This filter takes a different approach - frames on either side of the current frame are themselves filtered before being fed back
+into the filtering of the current frame. In other words, the current frame is filtered based on the filtered results of the adjacent frames.
+This happens in-line, without requesting the output of previously filtered frames. So while we duplicate calculations,
+we remove the serial nature of the frame requests, allowing much better multithreading.
+
+Some Cnr2 modes only feedback filtered frames as reference for the next frame, instead of feeding back as both reference
+and result. This leads to stronger denoising, but less detail retention. So it's a tradeoff.
+
+#### Temporal Distance Weight Modes (`wmode`)
+In addition to `tmode`, there's also the `wmode` parameter.
+
+`wmode` is (roughly) in order of decreasing denoising strength. So `wmode` 0 denoises stronger (but has more artifacts)
+than mode 1, and so on.
+
+`wmode` simply effects the choice of temporal weights. Temporal weights can be used to reduce the impact of temporal
+neighbors based on how far they are from the current frame.
+
+Near frames are always weighted higher than far frames.
+
+| wmode | Description |
+| --- | --- | 
+| 0 | Equal weight (1.0) to all frames |
+| 1 | Sqrt-based weight curve. Higher initial weight, but faster decay (curve drop off) than `wmode` 2 |
+| 2 | Sin-based weight curve. Lower initial weight, but slower decay (curve drop off) than `wmode` 1. |
+| 3 | Linear weight curve. So [1/2, 1/3, 1/4, 1/5], etc. Same weight curve as used in TTempSmooth. Lowest weights of all `wmode`s |
+
+| Parameter | Type | Options (Default) | Description |
+| --- | --- | --- | --- |
+| clip | 8-16 bit integer, YUV | | Clip to process |
+| mode | string | "oxx" | Mode for each plane.  The letter `o` means wide mode, which is less sensitive to changes in the pixels, and more effective. The letter `x` means narrow mode, which is less effective but can preserve more detail.|
+| radius | int  | 1 - 10 (2) | Temporal radius. Larger values tend to denoise more, and can even prevent some artifacts.|
+| sense | int[3] | -1 - 255 ([35, 47, 47]) | Per-plane noise / motion sensitivity threshold. -1 is an convenience alias for default values. Higher values identify more noise, but also motion and thus can cause ghosting. Reduce these values if you see ghosting / artifacts. |
+| str | int[3] | -1 - 255 ([192, 255, 255]) | Denoising strength. -1 is an convenience alias for default values. Higher values denoise more, but can also cause artifacts, particularly when used with higher (or too low) `sense` values. |
+| pow | float[3] | 0.0 - inf ([1.0, 1.0, 1.0]) | Power applied to internal weight curve. Values above 1.0 denoise more, below 1.0 denoise less. Lowering `pow` is a great way to prevent artifacts while still keeping most of your denoising. Similar principal to `gamma` parameter in std.Levels adjustment, only applied to internal denoising weights. |
+| scenechange | bool | True | Enables scene-aware filtering. Requires the use of external scene change detection, and expects `_SceneChangePrev` and `_SceneChangeNext` to be set. Set to `False` to disable scenechange handling - this will cause artifacts across scene changes, so be warned. |
+| tmode | int | 0 - 4 (0) | Temporal processing mode. See above explanation on `tmode`s. In decreasing order of denoising strength and speed. |
+| wmode | int | 0 - 3 (0) | Temporal weighting mode. See above explanation on `wmode`s. In decreasing order of denoising strength. No effect on speed.|
+| ref | clip | None | Reference clip. Used for weighting calculation. It can be useful to use a prefilter as a reference.|
+
+#### Cnr2 porting guide
+For those looking to upgrade from Cnr2, here's a rough approximation of equivalent settings.
+
+```py
+clip.cnr2.Cnr2(mode="oxx", scdthr=10.0, ln=35, lm=192, un=47, um=255, vn=47, vm=255)
+from vstools import sc_detect
+sc_detect(clip, threshold=0.1).zsmooth.Cnr4(mode="oxx", tmode=2, radius=2, sense=[35,47,47] str=[192,255,255])
+```
+
+#### Tuning tips
+The defaults of Cnr4 are quite aggressive. The original plugin was designed to work with noisy sources and 
+the defaults show that. 
+
+Cnr4 benefits from a denoised luma plane, as a cleaner luma allows for better internal calculations when denoising chroma.
+It can be helpful to use something like TTempSmooth as a prefilter and feed it in via the `ref` param.
+
+When adjusting filter strength, maybe start by using higher `tmode` or `wmode`s if the effect is too strong. Higher
+values denoise less and generally preserve more detail. They can be useful for quick adjustments without having to
+fiddle with `sense` and `str`. Once you've got something you like, you can fine tune it with `sense`, `str` and
+`pow`.
+
+When tuning parameters, it can be helpful to leave the `str` at default and tune `sense` parameters based on your
+noise patterns. You can likely lower `sense` until just before your noise comes back. Then try lowering `str` 
+values until your noise comes back and then raise up a bit.
+
+Noteably, the `sense` and `str` parameters are inter-related. While you can lower `sense`, you'll eventually 
+start to see artifacts that appear unless you correspondingly lower `str`. It may even be helpful to lower (divide)
+the `sense` and `str` variables by a shared constant, so you reduce motion sensitivity and denoising strength in
+lockstep.
+
+Try lowering `pow` (below 1.0, so like `0.2 - 0.9`) in order to reduce artifacts but still keep denoising relatively strong.
+
+### DCTFilter
+For each 8x8 block, DCTFilter will do a Discrete Cosine Transform (DCT), scale down the selected frequency values, 
+and then reverse the process with an Inverse Discrete Cosine Transform (IDCT).
+
+This implementation statically links fftw3 on all platforms, so no external libraries are required.
+
+```py
+core.zsmooth.DCTFilter(vnode clip, float[] factors[, int[] planes=[0, 1, 2]])
+```
+
+| Parameter | Type | Options (Default) | Description |
+| --- | --- | --- | --- |
+| clip | 8-16 bit integer, 16-32 bit float, all formats | | Clip to process |
+| factors | float[] | A list of 8 floating point numbers, all of which must be specified as in the range (0.0 <= x <= 1.0). These correspond to scaling factors for the 8 rows and columns of the 8x8 DCT blocks. The leftmost number corresponds to the top row, left column. This would be the DC component of the transform and should always be left as 1.0. The row & column numbers are multiplied together to get the scale factor for each of the 64 values in a block. | 
+| planes | int[] | ([0, 1, 2]) | Which planes to process. Any unfiltered planes are copied from the input clip. |
+
+### DegrainMedian
+DegrainMedian is a spatio-temporal limited median denoiser. It uses various methods to replace every pixel with one
+selected from its 3x3 neighbourhood, from either the current, previous, or next frame.
+
+The first column and the last column are simply copied from the source frame. The first row and the last row are also
+copied from the source frame. If interlaced=True, then the second row and the second-to-last row are also copied from
+the source frame.
+
+```py
+core.zsmooth.DegrainMedian(clip clip[, float[] limit, int[] mode, bool interlaced, bool norow, bool scalep])
 ```
 
 Modes:
@@ -142,6 +317,8 @@ Modes:
 | clip | 8-16 bit integer, 16-32 bit float, RGB, YUV, GRAY | | Clip to process |
 | limit | float[] | 0 - bit depth max ([7, 7, 7]) | The maximum amount that a pixel can change. A higher limit results in more smoothing. Can be specified as an array, with values corresonding to each plane of the input clip. |
 | mode | int[] | 0 - 5, inclusive ([1,1,1]) | The processing mode. 0 is the strongest, 5 is the weakest. Can be specified as an array, with values corresponding to each plane. |
+| interlaced | bool | (False) | If True, the top line and the bottom line of the 3x3 neighbourhood will come from the same field as the middle line. In other words, one line will be skipped between the top line and the middle line, and between the middle line and the bottom line. This parameter should only be used when the input clip contains interlaced video. |
+| norow | bool | (False) | If True, the two pixels to the left and right of the original pixel will not be used in the calculations. The corresponding pixels from the previous and next frames are still used. | 
 | scalep | bool | (False) | Parameter scaling. If set to true, all threshold values will be automatically scaled from 8-bit range (0-255) to the corresponding range of the input clip's bit depth. |
 
 ### FluxSmooth(S|ST)
@@ -181,8 +358,8 @@ def fluxSmoothT(clip, threshold, radius):
     med = clip.zsmooth.TemporalMedian(radius)
     avg = clip.zsmooth.TemporalSoften(radius, threshold)
 
-    from vsrgtools import limit_filter, LimitFilterMode
-    return limit_filter(med, clip, avg, mode=LimitFilterMode.DIFF_MIN)
+    diff_min = 'y x - y z - xor y y x - abs y z - abs < x z ? ?'
+    return core.std.Expr([med,clip,avg], diff_min)
 ```
 
 ### InterQuartileMean
@@ -192,7 +369,7 @@ Edge pixels are processed using mirror padding.
 
 An interquartile mean is a mean (average) where the darkest 1/4 and brightest 1/4 of pixels in the grid
 are thrown out, and the remaining middle values are averaged. This prevents the extremes from skewing the average,
-thus making InterQuartileMean a solid option as a prefilter.
+thus making InterQuartileMean a solid option as a (fast) prefilter.
 
 ```py
 core.zsmooth.InterQuartileMean(clip clip[, int[] radius = [1,1,1], int[] planes = [0,1,2]])
@@ -207,19 +384,25 @@ core.zsmooth.InterQuartileMean(clip clip[, int[] radius = [1,1,1], int[] planes 
 Credit to Dogway's ["IQM3" and "IQM5" implementations](https://github.com/Dogway/Avisynth-Scripts/blob/c6a837107afbf2aeffecea182d021862e9c2fc36/ExTools.avsi#L3437-L3575) for the original idea.
 
 #### Tip:
-IQM3 and IQM5 can be combined together to provide better edge protection by taking the best of both worlds using
-`limit_filter` from `vsjetpack/vsrgtools`:
+IQM3 and IQM5 can be combined together to provide better edge protection by taking the best of both worlds.
+
+The following example shows various ways to threshold IQM, as well as combine multiple results together 
+and threshold on a form of variance, which generally leads to better edge retention.
 
 ```python
-iqm3 = clip.zsmooth.InterQuartileMean(1)
-iqm5 = clip.zsmooth.InterQuartileMean(2)
+def IQMV(clip, thresh=8, vthresh=5):
+    # thresh - maximum pixel change
+    # vthresh - variance threshold, mostly effects edge retention
 
-from vsrgtools import limit_filter, LimitFilterMode
-iqmv = limit_filter(iqm3, clip, iqm5, mode=LimitFilterMode.SIMPLE_MIN)
+    iqm3 = clip.zsmooth.InterQuartileMean(1)
+    iqm5 = clip.zsmooth.InterQuartileMean(2)
+
+    iqm3 = core.vszip.LimitFilter(iqm3, clip, dark_thr=thresh, bright_thr=thresh)
+    iqm5 = core.vszip.LimitFilter(iqm5, clip, dark_thr=thresh, bright_thr=thresh)
+
+    return core.std.Expr([iqm3, clip, iqm5], f'y z - abs {vthresh} > x z ?')
 ```
 
-This can be further enhanced by using `limit_filter` to threshold IQM3 and IQM5 separately, and then combining the result with a
-third `limit_filter`. This is essentially what Dogway's `IQMV` function does.
 
 ### Median
 Replaces each pixel with the median of the surrounding 3x3, 5x5, or 7x7 grid, based on the `radius` parameter.
@@ -258,8 +441,8 @@ def minblur(clip, radius, repair_edges=False):
 
     median = clip.zsmooth.Median(radius)
 
-    from vsrgtools import limit_filter, LimitFilterMode
-    limited = limit_filter(gauss, clip, median, mode=LimitFilterMode.DIFF_MIN)
+    diff_min = 'y x - y z - xor y y x - abs y z - abs < x z ? ?'
+    limited = core.std.Expr([gauss, clip, median], diff_min)
 
     # Restore edges if desired, Dogway recommends to disable this when using minblur as a prefilter.
     if repair_edges:
@@ -351,7 +534,7 @@ core.zsmooth.SmartMedian(clip clip[, int[] radius = [1,1,1], int[] threshold = [
 | Parameter | Type | Options (Default) | Description |
 | --- | --- | --- | --- |
 | clip | 8-16 bit integer, 16-32 bit float, RGB, YUV, GRAY | | Clip to process |
-| radius | int[] | 0-3 ([1, 1, 1]) | The spatial radius of the filter. Radius 1 is a 3x3 grid, radius 2 is a 5x5 grid, and radius 3 is a 7x7 grid. Radius 0 disables filtering for the given plane.|
+| radius | int[] | 0-3 ([1, 1, 1]) | The per-plane spatial radius of the filter. Radius 1 is a 3x3 grid, radius 2 is a 5x5 grid, and radius 3 is a 7x7 grid. Radius 0 disables filtering for the given plane.|
 | threshold | int[] | 0-bit depth max, or 0-255 with `scalep=True`([50, 50, 50] for radius 1, [128, 128, 128] for radius 2+) | The variance threshold. Pixels with a variance under the threshold are smoothed, and over the threshold are returned as is.|
 | scalep | bool | (False) | Parameter scaling. If set to true, all threshold values will be automatically scaled from 8-bit range (0-255) to the corresponding range of the input clip's bit depth. |
 | planes | int[] | ([0, 1, 2]) | Which planes to process. Any unfiltered planes are copied from the input clip. |
@@ -362,7 +545,7 @@ TemporalMedian is a temporal denoising filter. It replaces every pixel with the 
 This filter will introduce ghosting, so use with caution.
 
 ```py
-core.zsmooth.TemporalMedian(clip clip[, int radius = 1, int[] planes = [0, 1, 2]])
+core.zsmooth.TemporalMedian(clip clip[, int radius = 1, int[] planes = [0, 1, 2], bool scenechange = False])
 ```
 
 | Parameter | Type | Options (Default) | Description |
@@ -370,6 +553,7 @@ core.zsmooth.TemporalMedian(clip clip[, int radius = 1, int[] planes = [0, 1, 2]
 | clip | 8-16 bit integer, 16-32 bit float, RGB, YUV, GRAY | | Clip to process |
 | radius | int | 1 - 10 (1) | Size of the temporal window from which to calculate the median. First and last _radius_ frames of a clip are not filtered. |
 | planes | int[] | ([0, 1, 2]) | Which planes to process. Any unfiltered planes are copied from the input clip. |
+| scenechange | bool | (False) | Whether to compensate for scene changes. In short, if this is set to `True`, then Temporal Median will include any frames that lie beyond a scene change when filtering the current frame. This ensures that frames from other scenes don't "pollute" the current frame. This feature requires that the input clip have the `_SceneChangePrev` and `_SceneChangeNext` properties set on all input frames.|
 
 ### Temporal Repair
 **EXPERIMENTAL - MAY HAVE BUGS**
@@ -426,7 +610,7 @@ filters](https://github.com/vapoursynth/vs-miscfilters-obsolete) and uses the st
 "_SceneChangeNext" properties, which should be set by other scene detection filters prior to invoking TemporalSoften.
 
 ```py
-core.zsmooth.TemporalSoften(clip clip[, int radius = 4, float[] threshold = [], int scenechange = 0, bool scalep=False])
+core.zsmooth.TemporalSoften(clip clip[, int radius = 4, float[] threshold = [], int scenechange = 0, bool scalep=False, int[] planes=[0,1,2])
 ```
 
 | Parameter | Type | Options (Default) | Description |
@@ -436,6 +620,7 @@ core.zsmooth.TemporalSoften(clip clip[, int radius = 4, float[] threshold = [], 
 | threshold | float[] | 0 - 255 8-bit, 0 - 65535 16-bit, 0.0 - 1.0 float ([4,4,4] RGB, [4, 8, 8] YUV, [4] GRAY) | If the difference between the pixel in the current frame and any of its temporal neighbors is less than this threshold, it will be included in the mean. If the difference is greater, it will not be included in the mean.  If set to 0, the plane is copied from the source.|
 | scenechange | int |  -1 - 255 (-1) | Zero (0) disables scene change detection, negative one (-1) respects any existing scene change properties ("_SceneChangePrev", "_SceneChangeNext") and does not call SCDetect from Misc filters. If greater than zero, it is calculated as a percentage internally (scenechange/255) to qualify if a frame is a scenechange or not. Currently requires the SCDetect filter from the Miscellaneous filters plugin. |
 | scalep | bool | (False) | Parameter scaling. If set to true, all threshold values will be automatically scaled from 8-bit range (0-255) to the corresponding range of the input clip's bit depth. |
+| planes | int[] | ([0,1,2]) | Which planes to process. Any unfiltered planes are copied from the input clip.|
 
 ### TTempSmooth
 TTempSmooth is a motion adaptive (it only works on stationary parts of the picture), temporal smoothing filter.
@@ -469,11 +654,10 @@ core.zsmooth.TTempSmooth(vnode clip[, int maxr=3, int[] thresh=[4, 5, 5], int[] 
 | Parameter | Type | Options (Default) | Description |
 | --- | --- | --- | --- |
 | clip     | 8-16 bit integer, 16-32 bit float, RGB, YUV, GRAY |                         | Clip to process                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| radius   | int[]                                             | 1                       | The spatial radius of the filter. Currently only 1 (3x3) is supported, but future versions will include higher radii                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | maxr     | int                                               | 1-7 (3)                 | This sets the maximum temporal radius. By the way it works TTempSmooth automatically varies the radius used... this sets the maximum boundary. At 1 TTempSmooth will be (at max) including pixels from 1 frame away in the average (3 frames total will be considered counting the current frame). At 7 it would be including pixels from up to 7 frames away (15 frames total will be considered). With the way it checks motion there isn't much danger in setting this high, it's basically a quality vs. speed option. Lower settings are faster while larger values tend to create a more stable image.                                                                                                                                                        |
 | thresh   | int[]                                             | ([4, 5, 5])             | (8-bit scale) Your standard thresholds for differences of pixels between frames. TTempSmooth checks 2 frame distance as well as single frame, so these can usually be set slightly higher than with most other temporal smoothers and still avoid artifacts. Valid settings are from 1 to 256. Also important is the fact that as long as `mdiff` is less than the threshold value then pixels with larger differences from the original will have less weight in the average. Thus, even with rather large thresholds pixels just under the threshold won't have much weight, helping to reduce artifacts. If a single value is specified, it will be used for all planes. If two values are given then the second value will be used for the third plane as well. |
 | mdiff    | int[]                                             | ([2, 3, 3])             | (8-bit scale) Any pixels with differences less than or equal to `mdiff` will be blurred at maximum. Usually, the larger the difference to the center pixel the smaller the weight in the average. `mdiff` makes TTempSmooth treat pixels that have a difference of less than or equal to `mdiff` as though they have a difference of 0. In other words, it shifts the zero difference point outwards. Set `mdiff` to a value equal to or greater than `thresh-1` to completely disable inverse pixel difference weighting. Valid settings are from 0 to 255. If a single value is specified, it will be used for all planes. If two values are given then the second value will be used for the third plane as well.                                                |
-| strength | int                                               | 1-8 (2)                 | TTempSmooth uses inverse distance weighting when deciding how much weight to give to each pixel value. The strength option lets you shift the drop off point away from the center to give a stronger smoothing effect and add weight to the outer pixels. It does for the spatial weights what `mdiff` does for the difference weights.
+| strength | int                                               | 1-8 (2)                 | TTempSmooth uses inverse distance weighting when deciding how much weight to give to each pixel value. The strength option lets you shift the drop off point away from the center to give a stronger smoothing effect and add weight to the outer pixels. It does for the temporal weights what `mdiff` does for the difference weights.
 | scthresh | float                                             | -1.0 - 0 - 100.0 (12.0) | The standard scenechange threshold as a percentage of maximum possible change of the luma plane. A good range of values is between 8 and 15. Set `scthresh` to 0.0 to disable scenechange detection. Set `scthresh` to -1 to disable calls to `misc.SCDetect` internally and just use existing `_SceneChangePrev/Next` properties (useful for when said properties have already been set prior to calling this function).
 | fp       | bool                                              | True                    | Setting `fp=True` will add any weight not given to the outer pixels back onto the center pixel when computing the final value. Setting `fp=False` will just do a normal weighted average. `fp=True` is much better for reducing artifacts in motion areas and usually produces overall better results.
 | pfclip   | same format clip as `clip`                        | (none)                  | This allows you to specify a separate clip for TTempSmooth to use when calculating pixel differences. This applies to checking the motion thresholds, calculating inverse difference weights, and detecting scenechanges. Basically, the `pfclip` will be used to determine the weights in the average but the weights will be applied to the original input clip's pixel values.

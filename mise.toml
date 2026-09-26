@@ -1,8 +1,9 @@
 [env]
-_.python.venv = { path = ".mise/venv", create = true }
+_.python.venv = { path = ".venv", create = true }
+VAPOURSYNTH_EXTRA_PLUGIN_PATH = "/usr/lib64/vapoursynth"
 
 [tools]
 bun = "latest"
-python = "3.13.2"
-zig = "0.14.1"
-zls = "0.14.0"
+python = "3.14.4"
+zig = "0.15.2"
+zls = "0.15.0"

@@ -4,6 +4,7 @@ core = vs.core
 core.max_cache_size = 1024
 core.num_threads = 1
 
+scenechange = False
 from vspreview.api import is_preview
 if is_preview():
     radius = 1
@@ -21,8 +22,9 @@ match format:
     case 'f32':
         clip = core.std.BlankClip(width=1920,height=1080, format=vs.YUV420PS, color=[1.0, 0, 0], length=length)
     case _:
-        # clip = core.lsmas.LWLibavSource("/home/adub/Videos/Audi R8.mp4")
-        clip = core.bs.VideoSource("/home/adub/Videos/Audi R8.mp4")
+        clip = core.lsmas.LWLibavSource("/home/adub/Videos/Audi R8.mp4")
+        # clip = core.lsmas.LWLibavSource("/home/adub/Videos/test.mp4")
+        # clip = core.bs.VideoSource("/home/adub/Videos/Audi R8.mp4")
 
 #from vstools import depth
 # clip = depth(clip, 16)
@@ -33,27 +35,25 @@ match format:
 # clip = clip.resize.Lanczos(720, 480, format=vs.YUV444P16)
 # clip = clip.resize.Lanczos(720, 480)
 
+# Run scenechange detection
+# clip = clip.misc.SCDetect()
+
 clip.set_output(0)
 
 if format != 'f16':
     if output in ['tmedian', 'all']:
         tmedian = clip.tmedian.TemporalMedian(radius=radius)
-    if output in ['neo_tmedian', 'all']:
-        neo = clip.neo_tmedian.TemporalMedian(radius=radius)
 
-zsmooth = clip.zsmooth.TemporalMedian(radius=radius)
+zsmooth = clip.zsmooth.TemporalMedian(radius=radius, scenechange=scenechange)
 
 match output:
     case 'zsmooth':
         zsmooth.set_output()
     case 'tmedian':
         tmedian.set_output()
-    case 'neo_tmedian':
-        neo.set_output()
     case 'all':
         tmedian.set_output(1)
         zsmooth.set_output(2)
-        neo.set_output(3)
     case _:
         raise f"Unrecognized output type: {output}"
     

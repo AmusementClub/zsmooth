@@ -15,8 +15,10 @@ const median = @import("median.zig");
 const temporalRepair = @import("temporal_repair.zig");
 const smartMedian = @import("smart_median.zig");
 const ccd = @import("ccd.zig");
+const dctfilter = @import("dctfilter.zig");
+const cnr4 = @import("cnr4.zig");
 
-const version = @import("version.zig").version;
+const version = @import("config").version;
 
 export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vsapi: *const vs.PLUGINAPI) void {
     _ = vsapi.configPlugin.?("com.adub.zsmooth", "zsmooth", "Smoothing functions in Zig", vs.makeVersion(version.major, version.minor), vs.VAPOURSYNTH_API_VERSION, 0, plugin);
@@ -35,4 +37,6 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vsapi: *const vs.PLUGINAPI)
     temporalRepair.registerFunction(plugin, vsapi);
     smartMedian.registerFunction(plugin, vsapi);
     ccd.registerFunction(plugin, vsapi);
+    dctfilter.registerFunction(plugin, vsapi);
+    cnr4.registerFunction(plugin, vsapi);
 }

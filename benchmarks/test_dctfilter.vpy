@@ -16,13 +16,15 @@ if is_preview():
 
 match format:
     case 'u8':
-        clip = core.std.BlankClip(width=1920,height=1080, format=vs.YUV420P8, color=[255, 128, 128], length=length)
+        # Use a mod-16 height to avoid the need for internal padding,
+        # thus allowing for more accurate benchmarking numbers (since we aren't calling Point + Crop internally) 
+        clip = core.std.BlankClip(width=1920,height=1088, format=vs.YUV420P8, color=[255, 128, 128], length=length)
     case 'u16':
-        clip = core.std.BlankClip(width=1920,height=1080, format=vs.YUV420P16, color=[255, 128, 128], length=length)
+        clip = core.std.BlankClip(width=1920,height=1088, format=vs.YUV420P16, color=[255, 128, 128], length=length)
     case 'f16':
-        clip = core.std.BlankClip(width=1920,height=1080, format=vs.YUV420PH, color=[1.0, 0, 0], length=length)
+        clip = core.std.BlankClip(width=1920,height=1088, format=vs.YUV420PH, color=[1.0, 0, 0], length=length)
     case 'f32':
-        clip = core.std.BlankClip(width=1920,height=1080, format=vs.YUV420PS, color=[1.0, 0, 0], length=length)
+        clip = core.std.BlankClip(width=1920,height=1088, format=vs.YUV420PS, color=[1.0, 0, 0], length=length)
     case _:
         # clip = core.lsmas.LWLibavSource("/home/adub/Videos/Audi R8.mp4")
         clip = core.bs.VideoSource("/home/adub/Videos/Audi R8.mp4")
@@ -39,19 +41,20 @@ match format:
 
 clip.set_output(0)
 
-std = clip.std.Median()
+if output in ['dctf', 'all']:
+    dctf = clip.dctf.DCTFilter([1,0,0,0,0,0,0,0])
 
-zsmooth = clip.zsmooth.Median(int(radius))
+zsmooth = clip.zsmooth.DCTFilter([1,0,0,0,0,0,0,0])
 
 match output:
     case 'zsmooth':
         zsmooth.set_output()
-    case 'std':
-        std.set_output()
+    case 'dctf':
+        dctf.set_output()
     case 'all':
         clip.set_output(0)
-        std.set_output(1)
-        zsmooth.set_output(3)
+        dctf.set_output(1)
+        zsmooth.set_output(2)
     case _:
         raise f"Unrecognized output type: {output}"
 

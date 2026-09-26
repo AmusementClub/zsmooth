@@ -3,12 +3,10 @@ const vapoursynth = @import("vapoursynth");
 const ZAPI = vapoursynth.ZAPI;
 const testing = @import("std").testing;
 
-const types = @import("common/type.zig");
 const vscmn = @import("common/vapoursynth.zig");
 const gridcmn = @import("common/array_grid.zig");
 const vec = @import("common/vector.zig");
 
-const string = @import("common/string.zig");
 const float_mode: std.builtin.FloatMode = if (@import("config").optimize_float) .optimized else .strict;
 
 const vs = vapoursynth.vapoursynth4;
@@ -18,11 +16,12 @@ const rp = vs.RequestPattern;
 const fm = vs.FilterMode;
 const st = vs.SampleType;
 
-// https://ziglang.org/documentation/master/#Choosing-an-Allocator
-//
-// Using the C allocator since we're passing pointers to allocated memory between Zig and C code,
-// specifically the filter data between the Create and GetFrame functions.
 const allocator = std.heap.c_allocator;
+
+// We don't have sorting networks beyond 49 elements at this time,
+// and I haven't implemented any constant time / windowed approach just yet,
+// so we're limited to a radius of 3 (7x7) median.
+const MAX_RADIUS = 3;
 
 const MedianData = struct {
     // The clip on which we are operating.
@@ -42,26 +41,13 @@ fn Median(comptime T: type) type {
     const VT = @Vector(vector_len, T);
 
     return struct {
-        const UAT = types.UnsignedArithmeticType(T);
-        const UATV = @Vector(vector_len, UAT);
-
-        const Grid3 = gridcmn.ArrayGrid(3, T);
-        const Grid5 = gridcmn.ArrayGrid(5, T);
-        const Grid7 = gridcmn.ArrayGrid(7, T);
-
-        const GridV3 = gridcmn.ArrayGrid(3, VT);
-        const GridV5 = gridcmn.ArrayGrid(5, VT);
-        const GridV7 = gridcmn.ArrayGrid(7, VT);
-
         fn median(grid: anytype) @typeInfo(@TypeOf(grid.values)).array.child {
             return grid.medianWithCenter();
         }
 
         fn processPlaneScalar(radius: comptime_int, noalias srcp: []const T, noalias dstp: []T, width: usize, height: usize, stride: usize) void {
             const Grid = switch (comptime radius) {
-                1 => Grid3,
-                2 => Grid5,
-                3 => Grid7,
+                inline 1...MAX_RADIUS => |r| gridcmn.ArrayGrid(r * 2 + 1, T),
                 else => unreachable,
             };
 
@@ -110,16 +96,12 @@ fn Median(comptime T: type) type {
             // We process the mirrored pixels using our scalar implementation, as Grid.initFromCenterMirrored
             // doesn't fully support vectors at this time. That's why we need both a scalar Grid and a vector Grid.
             const GridS = switch (comptime radius) {
-                1 => Grid3,
-                2 => Grid5,
-                3 => Grid7,
+                inline 1...MAX_RADIUS => |r| gridcmn.ArrayGrid(r * 2 + 1, T),
                 else => unreachable,
             };
 
             const GridV = switch (comptime radius) {
-                1 => GridV3,
-                2 => GridV5,
-                3 => GridV7,
+                inline 1...MAX_RADIUS => |r| gridcmn.ArrayGrid(r * 2 + 1, VT),
                 else => unreachable,
             };
 
@@ -193,22 +175,22 @@ fn Median(comptime T: type) type {
     };
 }
 
-fn medianGetFrame(n: c_int, activation_reason: ar, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+fn medianGetFrame(n: c_int, activation_reason: ar, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
     // Assign frame_data to nothing to stop compiler complaints
     _ = frame_data;
 
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, frame_ctx);
     const d: *MedianData = @ptrCast(@alignCast(instance_data));
 
     if (activation_reason == ar.Initial) {
-        zapi.requestFrameFilter(n, d.node, frame_ctx);
+        zapi.requestFrameFilter(n, d.node);
     } else if (activation_reason == ar.AllFramesReady) {
-        const src_frame = zapi.initZFrame(d.node, n, frame_ctx);
+        const src_frame = zapi.initZFrame(d.node, n);
         defer src_frame.deinit();
 
         const dst = src_frame.newVideoFrame2(d.process);
 
-        const processPlane: @TypeOf(&Median(u8).processPlane) = switch (vscmn.FormatType.getDataType(d.vi.format)) {
+        const processPlane = switch (vscmn.FormatType.getDataType(d.vi.format)) {
             .U8 => &Median(u8).processPlane,
             .U16 => &Median(u16).processPlane,
             .F16 => &Median(f16).processPlane,
@@ -236,16 +218,16 @@ fn medianGetFrame(n: c_int, activation_reason: ar, instance_data: ?*anyopaque, f
     return null;
 }
 
-export fn medianFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+export fn medianFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     _ = core;
     const d: *MedianData = @ptrCast(@alignCast(instance_data));
     vsapi.?.freeNode.?(d.node);
     allocator.destroy(d);
 }
 
-export fn medianCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+export fn medianCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     _ = user_data;
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
     const inz = zapi.initZMap(in);
     const outz = zapi.initZMap(out);
 

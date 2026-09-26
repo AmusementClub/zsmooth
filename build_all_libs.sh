@@ -5,44 +5,46 @@ rm -rf zig-out build
 
 mkdir build
 
+# Build all platforms in parallel
+zig build release -Doptimize=ReleaseFast
+
 # Windows
-zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=x86_64_v3
-zip -9 -j build/zsmooth-x86_64-windows.zip zig-out/bin/zsmooth.dll 
-
-zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=znver4
-zip -9 -j build/zsmooth-x86_64-windows-znver4.zip zig-out/bin/zsmooth.dll 
-
+zip -9 -j build/zsmooth-x86_64-windows.zip zig-out/x86_64-windows-haswell/zsmooth.dll
+zip -9 -j build/zsmooth-x86_64-windows-znver4.zip zig-out/x86_64-windows-znver4/zsmooth.dll
 
 # Mac
-zig build -Doptimize=ReleaseFast -Dtarget=x86_64-macos
-zip -9 -j build/zsmooth-x86_64-macos.zip zig-out/lib/libzsmooth.dylib
-
-zig build -Doptimize=ReleaseFast -Dtarget=aarch64-macos
-zip -9 -j build/zsmooth-aarch64-macos.zip zig-out/lib/libzsmooth.dylib
-
+zip -9 -j build/zsmooth-x86_64-macos.zip zig-out/x86_64-macos-default/libzsmooth.dylib
+zip -9 -j build/zsmooth-aarch64-macos.zip zig-out/aarch64-macos-default/libzsmooth.dylib
 
 # Linux GNU
-zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-gnu.2.17 -Dcpu=x86_64_v3
-zip -9 -j build/zsmooth-x86_64-linux-gnu.zip zig-out/lib/libzsmooth.so
-
-zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-gnu.2.17 -Dcpu=znver4
-zip -9 -j build/zsmooth-x86_64-linux-gnu-znver4.zip zig-out/lib/libzsmooth.so
-
-zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-gnu.2.17
-zip -9 -j build/zsmooth-aarch64-linux-gnu.zip zig-out/lib/libzsmooth.so
+zip -9 -j build/zsmooth-x86_64-linux-gnu.zip zig-out/x86_64-linux-gnu.2.17-haswell/libzsmooth.so
+zip -9 -j build/zsmooth-x86_64-linux-gnu-znver4.zip zig-out/x86_64-linux-gnu.2.17-znver4//libzsmooth.so
+zip -9 -j build/zsmooth-aarch64-linux-gnu.zip zig-out/aarch64-linux-gnu.2.17-default/libzsmooth.so
 
 
 # Linux Musl
-zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-musl -Dcpu=x86_64_v3
-zip -9 -j build/zsmooth-x86_64-linux-musl.zip zig-out/lib/libzsmooth.so
-
-zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-musl -Dcpu=znver4
-zip -9 -j build/zsmooth-x86_64-linux-musl-znver4.zip zig-out/lib/libzsmooth.so
-
-zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl
-zip -9 -j build/zsmooth-aarch64-linux-musl.zip zig-out/lib/libzsmooth.so
+zip -9 -j build/zsmooth-x86_64-linux-musl.zip zig-out/x86_64-linux-musl-haswell/libzsmooth.so
+zip -9 -j build/zsmooth-x86_64-linux-musl-znver4.zip zig-out/x86_64-linux-musl-znver4/libzsmooth.so
+zip -9 -j build/zsmooth-aarch64-linux-musl.zip zig-out/aarch64-linux-musl-default/libzsmooth.so
 
 pushd build
 
 sha256sum *zsmooth* > zsmooth_checksums.sha256
 popd
+
+# Build all of the wheels in parallel
+rm -rf dist
+
+ZSTARGET=aarch64-linux-gnu python -m build &
+ZSTARGET=aarch64-linux-musl python -m build &
+ZSTARGET=x86_64-linux-gnu python -m build &
+ZSTARGET=x86_64-linux-musl python -m build &
+ZSTARGET=aarch64-macos python -m build &
+ZSTARGET=x86_64-macos python -m build &
+ZSTARGET=x86_64-windows python -m build &
+
+# Wait for the jobs to complete
+wait
+
+# Dedicated sdist build to ensure we get a clean/unclobbered sdist (since the above builds race)
+python -m build --sdist

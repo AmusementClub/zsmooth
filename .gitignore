@@ -1,7 +1,10 @@
 zig-cache
 zig-out
+zig-pkg
 .zig-cache
 .direnv
 .vspreview
 .vsjet
+.mise
+dist
 /build

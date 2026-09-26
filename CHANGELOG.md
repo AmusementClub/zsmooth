@@ -1,7 +1,89 @@
 # Changelog
 
+## 0.20.0
+* RemoveGrain: Fix bug in parsing of `mode` param. Previously, specifying different modes for planes 1 and 2 were not respected.
+* build: Update znver4 builds to disable use of AVX512BF16, per Myrsloik's guidance.
+* TemporalSoften: Add `planes` parameter for convenience.
+* TemporalSoften: Increase max radius from 7 to 10.
+
+## 0.19.0
+* CCD: Add YUV support. This leads to a *massive* speed improvement, when compared to converting a clip to RGB and then
+calling CCD on said clip. There are multiple reasons why this is faster, but I'm seeing ~10x speed increase. And that's
+not a typo. Just a basic YUV420P8 -> RGB conversion with Lanczos + CCD runs \~36fps (single threaded). Running purely on
+the YUV420P8 input nets \~400fps (single-threaded). I was expecting a speed increase, but damn, that's huge.
+
+## 0.18.0
+* CCD: ~20% speedup for temporal radius >= 1. The algorithm now operates on prev/next frames simultaneously using
+instruction + memory access parallelism.
+* Cnr4: Add proper SIMD/vectorized implementation for a 2-3x speedup for temporal radius > 1.
+
+## 0.17.0
+* Cnr4: BREAKING CHANGE. Also adjusted the order of arguments, placing the ones most likely to be changed at the front of the function,
+and modes less likely to change at the end of the function.
+* Cnr4: BREAKING CHANGE. Renamed `*_sense` and `*_str` parameters to new plane array-based `sense` and `str` params. 
+* Cnr4: BREAKING CHANGE. Changed the order of `tmode` modes so that they're sorted from strongest to weakest (and fastest to slowest).
+* Cnr4: Adjust absolute difference influence so that each channel is handled separately. This prevents large differences
+in one plane negatively impacting the denoising results in a different plane.
+* Cnr4: Add ref clip support.
+* Cnr4: Adjusted Cnr2 mode so that it incorporates all available frames when calculating the current frame. This results
+in a more temporally stable output, and honestly is what I should have done originally.
+* Cnr4: Add `wmode` parameter support, which allows for incorporating temporal distance into weight calculations. The further 
+away a frame is, the less impact it has on the final result. This allows for greater detail retention at the cost of
+lesser denoising.
+* Cnr4: Added new Cnr2 mode with uses an expanding precalculation radius. The existing Cnr2 mode uses radius 1 (so prev
+and next frame) when calculating frames prior to feeding back into calculating the current frame. The new mode uses larger 
+radii when it can (so as calculations move closer to the current frame). This results in better denoising and more
+detail retention, but it's much more computationally expensive, especially at higher radii.
+* CCD: Add ref clip support
+* TTempsmooth: Internal refactors and code cleanup. Might be a bit faster, but a whole lot less code.
+
+## 0.16.0
+* Add DCTFilter - thanks to Zig, fftw is statically linked on all platforms, so there's no dynamic library dependency
+on any OS. And interestingly, it's also *faster* than the original plugin, by ~20% in my tests. Also supports f16
+(half float) formats.
+* Add Cnr4 - inspired by Cnr2, but with a large number of enhancements in speed, quality, and behavior.
+
+## 0.15.5
+* Build wheels with *.avx2 and *.zn4 suffixes to match Vapoursynth r75 behavior. This changes from r74's "v2/v3/v4"
+behavior. See https://github.com/vapoursynth/vapoursynth/blob/7c014a375dad60c9f4362e91125257e1a9c8c6ca/src/core/vscore.cpp#L2150-L2153
+for refrence.
+* Upped VS dependency to r75 in pyproject.toml, for the above reason
+
+## 0.15.4
+* Actually force (non-PyPi) builds to target Glibc 2.17 ABI compatibility
+* Prevent any non-library files from ending up in PyPi wheels. Windows wheels had extra *.lib files in them previously.
+
+## 0.15.3
+* Update CPU architectures based on Myrsloik's "essay": https://github.com/vapoursynth/vapoursynth/issues/1185#issuecomment-4235066569
+* This means we now target Haswell instead of the generic `x86_64_v3` target, as well as `Zen 4` albeit with SSE4a
+turned off (which was never supported by Intel).
+
+## 0.15.2
+* Actually build Python modules with AVX512 turned on for x86_64_v4 targets
+
+## 0.15.1
+* Create Python package for Zsmooth, as part of new plugin handling with Vapoursynth r74
+* Internal code improvements for IQM, and sorting functions
+* Restructured benchmark results to be a bit easier to read
+
+## 0.15
+* Fix panic/extra `free` in TTempSmooth. Issue: https://github.com/adworacz/zsmooth/issues/21
+
+## 0.14
+* Fix TemporalMedian with planes=0. In short, planes were not being properly copied from the source frame. Fixes #19
+* Support optional scenechange handling in TemporalMedian. Closes #16
+
 ## 0.13
-* TBD
+* Upgrade to Zig 0.15.2 - brings some nice performance improvements for several filters, particularly with AVX512.
+* Minor code improvements in VerticalCleaner, Repair, TemporalMedian, TemporalSoften, FluxSmooth, DegrainMedian, and
+TTempSmooth. Essentially, I've made updates to use vapoursynth-zig's ZAPI, and compartmentalized the filtering logic,
+which shrinks binary size and makes filters easier to test and port (to things like Avisynth or FFMPEG, potentially).
+* Fix minor memory leak in Repair - repair clip wasn't freed if an error occurred during plugin init.
+* Improve cross-builds - we now take advantage of Zig's build intelligence to
+generate build artifacts for all artifacts in parallel.
+* Fix several bugs in CCD. 1) we now properly validate the `scale` param based on the clip size, 2) we now use a dynamic
+filter diameter/radius for SIMD vector processing, which improves performance when "high" points are not used, and 3) fixed a
+corner case bug with the main SIMD vector loop and cases where the radius was >= the SIMD vector size.
 
 ## 0.12
 * Migrate Median and InterQuartileMean to ZAPI and compartmentalized filter modules to reduce binary
