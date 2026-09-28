@@ -37,10 +37,12 @@ jobs:
         }
 
     - name: Checkout repo
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Setup Zig
       uses: mlugg/setup-zig@v2
+      with:
+        version: 0.15.2
 
     - name: Build
       run: zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=${{ matrix.arch }}
@@ -60,13 +62,13 @@ jobs:
         7z a -t7z -mx=7 ../../zsmooth-${{ github.event.inputs.tag }}-${{ env.DCPU }}.7z *.dll
 
     - name: Upload
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: zsmooth-windows-${{ env.DCPU }}
         path: zig-out/bin/*.dll
 
     - name: Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       if: github.event_name == 'release'
       with:
         files: "zsmooth-${{ github.event.release.tag_name }}-${{ env.DCPU }}.7z"
@@ -74,7 +76,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''
       with:
         tag_name: ${{ github.event.inputs.tag }}
